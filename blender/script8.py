@@ -229,7 +229,7 @@ LABEL_SIZE=0.15       # font size in metres
 LABEL_EXTRUDE=0.0     # 0 = flat text
 
 
-def create_label(text,root,camera,color,z_offset=LABEL_Z_OFFSET,size=LABEL_SIZE,extrude=LABEL_EXTRUDE):
+def create_label(text,root,camera,color,start_frame=1,z_offset=LABEL_Z_OFFSET,size=LABEL_SIZE,extrude=LABEL_EXTRUDE):
     curve=bpy.data.curves.new(name=f"LabelCurve_{text}",type="FONT")
     curve.body=text
     curve.size=size
@@ -258,6 +258,15 @@ def create_label(text,root,camera,color,z_offset=LABEL_Z_OFFSET,size=LABEL_SIZE,
     out=mn.new("ShaderNodeOutputMaterial")
     ml.new(emit.outputs["Emission"],out.inputs["Surface"])
     curve.materials.append(mat)
+
+    if start_frame>1:
+        cb=create_channelbag(obj,f"Label_{text}VisAction")
+        for dp in ("hide_render","hide_viewport"):
+            fc=cb.fcurves.new(data_path=dp)
+            insert_keyframes(fc,
+                             np.array([1, start_frame-1, start_frame],dtype=np.float64),
+                             np.array([1.0, 1.0, 0.0],dtype=np.float64),
+                             interpolation="CONSTANT")
 
     return obj
 
@@ -629,7 +638,7 @@ def animate_camera(camera,start_frame,end_frame,
 camera=create_camera("Camera",CAMERA_POSITION,CAMERA_ROTATION,CAMERA_FOV)
 
 create_label(DRONE_LABELS[""],root,camera,DRONE_SHADERS[""].base_color)
-create_label(DRONE_LABELS["_Infer"],root_infer,camera,DRONE_SHADERS["_Infer"].base_color)
+create_label(DRONE_LABELS["_Infer"],root_infer,camera,DRONE_SHADERS["_Infer"].base_color,start_frame=_frame_offset_infer+1)
 
 if CAMERA_ANIM_ENABLED:
     anim_end=CAMERA_ANIM_END_FRAME if CAMERA_ANIM_END_FRAME is not None else bpy.context.scene.frame_end
