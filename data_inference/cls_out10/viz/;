@@ -1,0 +1,75 @@
+"""Replot per-cycle champion vs. challenger ATE bar chart."""
+
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.ticker import MaxNLocator
+from pathlib import Path
+
+DATA_FILE = Path(__file__).parent / "04_cycle_ate_data.txt"
+OUT_FILE = Path(__file__).parent / "04_cycle_ate_replot.png"
+
+CHAMPION_COLOR = "#888888"
+CHALLENGER_COLOR = "#22aa22"
+REJECTED_COLOR = "#dd2222"
+
+def _grid(ax):
+    for which, a, lw in [("major",0.25,0.6),("minor",0.10,0.35)]:
+        ax.grid(which=which, alpha=a, linewidth=lw)
+    ax.yaxis.set_major_locator(MaxNLocator(8))
+    ax.yaxis.set_minor_locator(MaxNLocator(32))
+
+def load_data(path):
+    cycles, champ, chall, outcomes = [], [], [], []
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            p = line.split()
+            cycles.append(int(p[0]))
+            champ.append(float(p[1]))
+            chall.append(float(p[2]))
+            outcomes.append(p[3])
+    return np.array(cycles), np.array(champ), np.array(chall), outcomes
+
+def main():
+    cycles, champ_ate, chall_ate, outcomes = load_data(DATA_FILE)
+
+    x = np.arange(len(cycles))
+    width = 0.34
+
+    fig, ax = plt.subplots(figsize=(8.5,3.8))
+
+    ax.bar(x-width/2, champ_ate, width, color=CHAMPION_COLOR, zorder=3)
+
+    for xi, val, outcome in zip(x, chall_ate, outcomes):
+        color = REJECTED_COLOR if outcome == "rejected" else CHALLENGER_COLOR
+        ax.bar(xi+width/2, val, width, color=color, zorder=3)
+        ax.text(xi+width/2, val, "×" if outcome=="rejected" else "✓",
+                ha="center", va="bottom", fontsize=9,
+                fontweight="bold", color=color)
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(cycles, fontsize=9)
+    ax.set_xlabel("cycle", fontsize=10)
+    ax.set_ylim(bottom=0)
+
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    _grid(ax)
+    ax.set_axisbelow(True)
+
+    ax.text(0.99,0.98,
+            "grey: champion\ngreen/red: challenger",
+            transform=ax.transAxes,
+            ha="right", va="top", fontsize=8)
+
+    plt.tight_layout()
+    fig.savefig(OUT_FILE, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+    print(f"Saved → {OUT_FILE}")
+
+if __name__ == "__main__":
+    main()

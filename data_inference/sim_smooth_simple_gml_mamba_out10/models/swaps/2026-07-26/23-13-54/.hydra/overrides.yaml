@@ -1,0 +1,6 @@
+- model_run_dir=/home/me/devel/nn_portable/nn/models/latest/simple_gml_mamba_out10/0
+- gen_dir=/home/me/devel/nn_portable/nn/generations
+- infer_zarr=/home/me/devel/nn_portable/nn/infer_log.zarr
+- online_zarr=/home/me/devel/nn_portable/nn/online_data.zarr
+- sim_dataset_path=/home/me/devel/nn_portable/nn/sim_data.zarr
+- training_mode=gml_rollout

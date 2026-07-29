@@ -1,0 +1,16 @@
+# Per-cycle ATE values recovered from 04_cycle_ate.png
+# Columns: cycle, champion_ate, challenger_ate, outcome
+# outcome: SWAPPED = challenger won and replaced champion, rejected = champion kept
+0	0.675	0.115	SWAPPED
+1	0.125	0.120	SWAPPED
+2	0.105	0.095	SWAPPED
+3	0.115	0.090	SWAPPED
+4	0.100	0.087	SWAPPED
+5	0.090	0.072	SWAPPED
+6	0.083	0.070	SWAPPED
+7	0.075	0.065	SWAPPED
+8	0.068	0.058	SWAPPED
+9	0.063	0.057	SWAPPED
+10	0.057	0.082	rejected
+11	0.057	0.045	SWAPPED
+12	0.057	0.045	SWAPPED

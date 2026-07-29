@@ -1,0 +1,54 @@
+model_run_dir: /home/me/devel/nn_portable/nn/models/latest/attention_1e0d_out10/0
+gen_dir: /home/me/devel/nn_portable/nn/generations
+session_dir: ~/devel/nn/sessions/${now:%Y-%m-%d_%H-%M-%S}
+infer_zarr: /home/me/devel/nn_portable/nn/infer_log.zarr
+online_zarr: /home/me/devel/nn_portable/nn/online_data.zarr
+sim_dataset_path: /home/me/devel/nn_portable/nn/sim_data.zarr
+p_cycles: .inf
+m_train_steps: 7500
+m_train_sim_steps: 250
+rollout_steps: 16
+n_eval_traj_sim: 0
+n_eval_traj_online: 25
+eval_max_frames: 2000
+training_mode: rollout
+gml_epochs: 1
+flat_schedule_prob: null
+batch_size: 256
+train_throttle_ratio: 0.1
+lr: 0.0002
+weight_decay: 0.1
+seed: 0
+max_schedule_prob: 0.0
+episode_len: 200
+collect_hz: 400
+min_online_episodes: 25
+loop_hz: 400
+flush_every: 400
+device: cuda
+channels:
+  estimated_state: alphacore/estimated_state
+  johnny_status: alphacore/johnny_status
+  vehicle_setpoint: alphacore/vehicle_setpoint
+  acceleration: alphacore/vehicle_imu
+  vicon_state: alphacore/vicon_state
+  trajectory_phase: alphacore/trajectory/phase
+norm:
+  pos: 3.0
+  vel: 0.8
+  angvel: 0.5
+  acc: 25.0
+  thrust: 9.81
+  setpoint: 3.0
+accel:
+  source: alphacore_channel
+  fallback: finite_diff
+ground_truth_source: px4
+nn_estimate:
+  enabled: true
+  publish_hz: 20.0
+  reseed_every_s: 32.0
+min_gen_dwell_s: 32
+swap_gate:
+  enabled: true
+  timeout_s: 1.0
