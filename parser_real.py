@@ -6,7 +6,7 @@ from scipy.spatial.transform import Rotation, Slerp
 from scipy.interpolate import interp1d
 
 DATA_DIR = "data_real"
-HZ = 200
+HZ = 30
 
 for log_dir in sorted(glob.glob(os.path.join(DATA_DIR, "log_*"))):
     ulg_files = glob.glob(os.path.join(log_dir, "*.ulg"))
@@ -58,5 +58,6 @@ for log_dir in sorted(glob.glob(os.path.join(DATA_DIR, "log_*"))):
         position=position_200,
         quaternion=quat_200,
         motor=motor_200,
+        t_start_us=np.float64(t_start),  # absolute ULog-internal time that timestamp=0 maps to
     )
     print(f"saved {out}  |  {n} samples @ {HZ} Hz  ({ts_200[-1]:.1f} s)")
