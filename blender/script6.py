@@ -214,6 +214,41 @@ def create_drone(suffix,data_path,fps,stride,frame_offset=0):
     return root,objects,n_frames
 
 
+DRONE_LABELS={
+    "":      "ground truth",
+    "_Infer":"inferred",
+}
+
+# Height above drone origin (metres) and text appearance
+LABEL_Z_OFFSET=0.4
+LABEL_SIZE=0.15       # font size in metres
+LABEL_EXTRUDE=0.0     # 0 = flat text
+
+
+def create_label(text,root,camera,z_offset=LABEL_Z_OFFSET,size=LABEL_SIZE,extrude=LABEL_EXTRUDE):
+    curve=bpy.data.curves.new(name=f"LabelCurve_{text}",type="FONT")
+    curve.body=text
+    curve.size=size
+    curve.extrude=extrude
+    curve.align_x="CENTER"
+    curve.align_y="CENTER"
+
+    obj=bpy.data.objects.new(f"Label_{text}",curve)
+    bpy.context.collection.objects.link(obj)
+
+    # Follow drone position in world space (no parent) so world-Z lock works correctly
+    obj.location=(0,0,z_offset)
+
+    loc=obj.constraints.new(type="COPY_LOCATION")
+    loc.target=root
+    loc.use_offset=True
+
+    rot=obj.constraints.new(type="COPY_ROTATION")
+    rot.target=camera
+
+    return obj
+
+
 def apply_shader(objects,shader,name):
     mat=bpy.data.materials.new(name=name)
     mat.use_nodes=True
@@ -333,6 +368,9 @@ def animate_camera(camera,start_frame,end_frame,
 
 
 camera=create_camera("Camera",CAMERA_POSITION,CAMERA_ROTATION,CAMERA_FOV)
+
+create_label(DRONE_LABELS[""],root,camera)
+create_label(DRONE_LABELS["_Infer"],root_infer,camera)
 
 if CAMERA_ANIM_ENABLED:
     anim_end=CAMERA_ANIM_END_FRAME if CAMERA_ANIM_END_FRAME is not None else bpy.context.scene.frame_end

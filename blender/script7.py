@@ -214,6 +214,41 @@ def create_drone(suffix,data_path,fps,stride,frame_offset=0):
     return root,objects,n_frames
 
 
+DRONE_LABELS={
+    "":      "ground truth",
+    "_Infer":"inferred",
+}
+
+# Height above drone origin (metres) and text appearance
+LABEL_Z_OFFSET=0.4
+LABEL_SIZE=0.15       # font size in metres
+LABEL_EXTRUDE=0.0     # 0 = flat text
+
+
+def create_label(text,root,camera,z_offset=LABEL_Z_OFFSET,size=LABEL_SIZE,extrude=LABEL_EXTRUDE):
+    curve=bpy.data.curves.new(name=f"LabelCurve_{text}",type="FONT")
+    curve.body=text
+    curve.size=size
+    curve.extrude=extrude
+    curve.align_x="CENTER"
+    curve.align_y="CENTER"
+
+    obj=bpy.data.objects.new(f"Label_{text}",curve)
+    bpy.context.collection.objects.link(obj)
+
+    # Follow drone position in world space (no parent) so world-Z lock works correctly
+    obj.location=(0,0,z_offset)
+
+    loc=obj.constraints.new(type="COPY_LOCATION")
+    loc.target=root
+    loc.use_offset=True
+
+    rot=obj.constraints.new(type="COPY_ROTATION")
+    rot.target=camera
+
+    return obj
+
+
 def apply_shader(objects,shader,name):
     mat=bpy.data.materials.new(name=name)
     mat.use_nodes=True
@@ -248,6 +283,119 @@ root_infer,objects_infer,n_frames_infer=create_drone("_Infer",DATA_INFER,FPS,STR
 apply_shader(objects_infer,DRONE_SHADERS["_Infer"],"DroneShader_Infer")
 
 bpy.context.scene.frame_end=max(n_frames,n_frames_infer+_frame_offset_infer)
+
+GRID_SPACING=0.5           # metres between grid lines (fixed as grid expands)
+GRID_MAX_SIZE=5.0          # full extent (metres) when fully expanded
+GRID_LINE_THICKNESS=0.005  # wireframe tube radius in metres
+GRID_COLOR=(0.8, 0.8, 0.8)
+GRID_ALPHA=0.04
+
+GRID_ANIM_START_FRAME=100
+GRID_ANIM_END_FRAME=160
+
+# Each plane: (name, rotation_euler_degrees)
+GRID_PLANES={
+    "grid_xy":(0,   0,  0),
+    "grid_xz":(90,  0,  0),
+    "grid_yz":(90,  0, 90),
+}
+
+
+def build_grid_nodegroup(spacing, mat):
+    ng=bpy.data.node_groups.new("GridNodeGroup","GeometryNodeTree")
+
+    ng.interface.new_socket("Geometry",in_out="OUTPUT",socket_type="NodeSocketGeometry")
+    size_sock=ng.interface.new_socket("Size",in_out="INPUT",socket_type="NodeSocketFloat")
+    size_sock.default_value=0.0
+    size_sock.min_value=0.0
+
+    nodes=ng.nodes
+    links=ng.links
+
+    gi=nodes.new("NodeGroupInput")
+    go=nodes.new("NodeGroupOutput")
+
+    grid=nodes.new("GeometryNodeMeshGrid")
+
+    # vertex count = ceil(Size / spacing) + 1
+    divide=nodes.new("ShaderNodeMath"); divide.operation="DIVIDE"
+    divide.inputs[1].default_value=spacing
+    ceil=nodes.new("ShaderNodeMath"); ceil.operation="CEIL"
+    add1=nodes.new("ShaderNodeMath"); add1.operation="ADD"
+    add1.inputs[1].default_value=1.0
+    fti=nodes.new("FunctionNodeFloatToInt"); fti.rounding_mode="ROUND"
+
+    m2c=nodes.new("GeometryNodeMeshToCurve")
+
+    circle=nodes.new("GeometryNodeCurvePrimitiveCircle")
+    circle.inputs["Resolution"].default_value=4
+    circle.inputs["Radius"].default_value=GRID_LINE_THICKNESS
+
+    c2m=nodes.new("GeometryNodeCurveToMesh")
+    c2m.inputs["Fill Caps"].default_value=False
+
+    set_mat=nodes.new("GeometryNodeSetMaterial")
+    set_mat.inputs["Material"].default_value=mat
+
+    links.new(gi.outputs["Size"],grid.inputs["Size X"])
+    links.new(gi.outputs["Size"],grid.inputs["Size Y"])
+
+    links.new(gi.outputs["Size"],divide.inputs[0])
+    links.new(divide.outputs["Value"],ceil.inputs[0])
+    links.new(ceil.outputs["Value"],add1.inputs[0])
+    links.new(add1.outputs["Value"],fti.inputs[0])
+    links.new(fti.outputs["Integer"],grid.inputs["Vertices X"])
+    links.new(fti.outputs["Integer"],grid.inputs["Vertices Y"])
+
+    links.new(grid.outputs["Mesh"],m2c.inputs["Mesh"])
+    links.new(m2c.outputs["Curve"],c2m.inputs["Curve"])
+    links.new(circle.outputs["Curve"],c2m.inputs["Profile Curve"])
+    links.new(c2m.outputs["Mesh"],set_mat.inputs["Geometry"])
+    links.new(set_mat.outputs["Geometry"],go.inputs["Geometry"])
+
+    return ng
+
+
+def create_grids(
+    spacing=GRID_SPACING,
+    max_size=GRID_MAX_SIZE,
+    color=GRID_COLOR,
+    alpha=GRID_ALPHA,
+    start_frame=GRID_ANIM_START_FRAME,
+    end_frame=GRID_ANIM_END_FRAME,
+):
+    mat=bpy.data.materials.new("GridMat")
+    mat.use_nodes=True
+    bsdf=mat.node_tree.nodes.get("Principled BSDF")
+    bsdf.inputs["Base Color"].default_value=(*color,1.0)
+    bsdf.inputs["Roughness"].default_value=1.0
+    bsdf.inputs["Alpha"].default_value=alpha
+    mat.blend_method="BLEND"
+
+    ng=build_grid_nodegroup(spacing,mat)
+
+    planes={}
+    for name,(rx,ry,rz) in GRID_PLANES.items():
+        mesh=bpy.data.meshes.new(name)
+        obj=bpy.data.objects.new(name,mesh)
+        bpy.context.collection.objects.link(obj)
+        obj.rotation_euler=[radians(rx),radians(ry),radians(rz)]
+
+        mod=obj.modifiers.new("Grid","NODES")
+        mod.node_group=ng
+
+        # animate Size: 0 at start_frame -> max_size at end_frame
+        mod["Socket_1"]=0.0
+        obj.keyframe_insert(data_path='modifiers["Grid"]["Socket_1"]',frame=start_frame)
+        mod["Socket_1"]=max_size
+        obj.keyframe_insert(data_path='modifiers["Grid"]["Socket_1"]',frame=end_frame)
+
+        planes[name]=obj
+
+    return planes
+
+
+grid_planes=create_grids()
 
 SPOTLIGHT_POSITIONS={
     "spot_1":(5,5,5),
@@ -289,7 +437,7 @@ CAMERA_FOV=77.3  # degrees, horizontal field of view
 # Frame range is in scene frames (1-based, matching the drone keyframes).
 CAMERA_ANIM_ENABLED=True
 CAMERA_ANIM_START_FRAME=100
-CAMERA_ANIM_END_FRAME=130          # set to None to use bpy.context.scene.frame_end
+CAMERA_ANIM_END_FRAME=160          # set to None to use bpy.context.scene.frame_end
 
 CAMERA_START_POSITION=(-3,-2.6,2.2)
 CAMERA_END_POSITION=(-1.5,-2.4,3.8)
@@ -333,6 +481,9 @@ def animate_camera(camera,start_frame,end_frame,
 
 
 camera=create_camera("Camera",CAMERA_POSITION,CAMERA_ROTATION,CAMERA_FOV)
+
+create_label(DRONE_LABELS[""],root,camera)
+create_label(DRONE_LABELS["_Infer"],root_infer,camera)
 
 if CAMERA_ANIM_ENABLED:
     anim_end=CAMERA_ANIM_END_FRAME if CAMERA_ANIM_END_FRAME is not None else bpy.context.scene.frame_end

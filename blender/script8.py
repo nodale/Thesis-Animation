@@ -167,6 +167,10 @@ DRONE_SHADERS={
 # Keyframe timing (frame numbers) is unchanged, so playback speed/duration is unaffected.
 STRIDE=1
 
+TRAIL_RADIUS=0.008   # tube radius for trajectory line in metres
+TRAIL_LENGTH=200     # sliding window in frames (0 = show full history)
+TRAIL_OPACITY=0.8    # max alpha at the newest (tip) end of the trail (0–1)
+
 bpy.ops.object.select_all(action="SELECT")
 bpy.ops.object.delete()
 
@@ -214,6 +218,150 @@ def create_drone(suffix,data_path,fps,stride,frame_offset=0):
     return root,objects,n_frames
 
 
+DRONE_LABELS={
+    "":      "ground truth",
+    "_Infer":"inferred",
+}
+
+# Height above drone origin (metres) and text appearance
+LABEL_Z_OFFSET=0.4
+LABEL_SIZE=0.15       # font size in metres
+LABEL_EXTRUDE=0.0     # 0 = flat text
+
+
+def create_label(text,root,camera,color,z_offset=LABEL_Z_OFFSET,size=LABEL_SIZE,extrude=LABEL_EXTRUDE):
+    curve=bpy.data.curves.new(name=f"LabelCurve_{text}",type="FONT")
+    curve.body=text
+    curve.size=size
+    curve.extrude=extrude
+    curve.align_x="CENTER"
+    curve.align_y="CENTER"
+
+    obj=bpy.data.objects.new(f"Label_{text}",curve)
+    bpy.context.collection.objects.link(obj)
+
+    obj.location=(0,0,z_offset)
+
+    loc=obj.constraints.new(type="COPY_LOCATION")
+    loc.target=root
+    loc.use_offset=True
+
+    rot=obj.constraints.new(type="COPY_ROTATION")
+    rot.target=camera
+
+    mat=bpy.data.materials.new(f"LabelMat_{text}")
+    mat.use_nodes=True
+    mn=mat.node_tree.nodes; ml=mat.node_tree.links; mn.clear()
+    emit=mn.new("ShaderNodeEmission")
+    emit.inputs["Color"].default_value=(*color[:3],1.0)
+    emit.inputs["Strength"].default_value=2.0
+    out=mn.new("ShaderNodeOutputMaterial")
+    ml.new(emit.outputs["Emission"],out.inputs["Surface"])
+    curve.materials.append(mat)
+
+    return obj
+
+
+def _create_trail_curve(name,position,n_frames,frame_offset,color,
+                        radius=TRAIL_RADIUS,trail_length=TRAIL_LENGTH,opacity=TRAIL_OPACITY,
+                        hide_frame=None):
+    pos_bl=frd_to_blender(position)
+    n=len(pos_bl)
+
+    curve_data=bpy.data.curves.new(f"Trail_{name}","CURVE")
+    curve_data.dimensions="3D"
+    curve_data.bevel_depth=radius
+    curve_data.use_fill_caps=True
+
+    spline=curve_data.splines.new("POLY")
+    spline.points.add(n-1)
+    co=np.ones((n,4),dtype=np.float32)
+    co[:,:3]=pos_bl
+    spline.points.foreach_set("co",co.ravel())
+
+    obj=bpy.data.objects.new(f"Trail_{name}",curve_data)
+    bpy.context.collection.objects.link(obj)
+
+    # Blender auto-generates UV on bevelled curves: U=around tube, V=along length (0→1).
+    # Use V as the fade factor: transparent at old tail (0) and new tip (1), opaque between.
+    mat=bpy.data.materials.new(f"TrailMat_{name}")
+    mat.use_nodes=True
+    mat.blend_method="HASHED"
+    tree=mat.node_tree; mn=tree.nodes; ml=tree.links
+    mn.clear()
+    tex=mn.new("ShaderNodeTexCoord")
+    sep=mn.new("ShaderNodeSeparateXYZ")
+    ramp=mn.new("ShaderNodeValToRGB")
+    ramp.color_ramp.interpolation="LINEAR"
+    el=ramp.color_ramp.elements
+    el[0].position=0.0; el[0].color=(0,0,0,0)       # old tail: transparent
+    mid=el.new(0.2);    mid.color=(1,1,1,opacity)    # ramps up quickly from tail
+    el[2].position=1.0; el[2].color=(0,0,0,0)        # new tip: transparent
+    bsdf=mn.new("ShaderNodeBsdfPrincipled")
+    bsdf.inputs["Base Color"].default_value=color
+    bsdf.inputs["Roughness"].default_value=1.0
+    out=mn.new("ShaderNodeOutputMaterial")
+    ml.new(tex.outputs["UV"],sep.inputs["Vector"])
+    ml.new(sep.outputs["Y"],ramp.inputs["Fac"])
+    ml.new(ramp.outputs["Alpha"],bsdf.inputs["Alpha"])
+    ml.new(bsdf.outputs["BSDF"],out.inputs["Surface"])
+    curve_data.materials.append(mat)
+
+    # animate bevel_factor_end: 0→1 over the drone's frame range
+    action=bpy.data.actions.new(f"Trail_{name}Action")
+    slot=action.slots.new(id_type='CURVE',name=curve_data.name)
+    curve_data.animation_data_create()
+    curve_data.animation_data.action=action
+    curve_data.animation_data.action_slot=slot
+    layer=action.layers.new(name="Layer")
+    strip=layer.strips.new(type='KEYFRAME')
+    cb=strip.channelbag(slot,ensure=True)
+
+    fc_end=cb.fcurves.new(data_path="bevel_factor_end")
+    insert_keyframes(fc_end,
+                     np.array([frame_offset+1, frame_offset+n_frames],dtype=np.float64),
+                     np.array([0.0,1.0],dtype=np.float64))
+
+    if trail_length>0:
+        fc_start=cb.fcurves.new(data_path="bevel_factor_start")
+        insert_keyframes(fc_start,
+                         np.array([frame_offset+1,
+                                   frame_offset+trail_length+1,
+                                   frame_offset+n_frames],dtype=np.float64),
+                         np.array([0.0, 0.0,
+                                   (n_frames-trail_length)/n_frames],dtype=np.float64))
+
+    if hide_frame is not None:
+        obj_cb=create_channelbag(obj,f"Trail_{name}VisAction")
+        for dp in ("hide_render","hide_viewport"):
+            fc=obj_cb.fcurves.new(data_path=dp)
+            insert_keyframes(fc,
+                             np.array([hide_frame-1, hide_frame],dtype=np.float64),
+                             np.array([0.0, 1.0],dtype=np.float64),
+                             interpolation="CONSTANT")
+
+    return obj
+
+
+def create_trail(name,position,n_frames,frame_offset,color,
+                 radius=TRAIL_RADIUS,trail_length=TRAIL_LENGTH,opacity=TRAIL_OPACITY,
+                 reanchor_frames=None):
+    if reanchor_frames is None or len(reanchor_frames)==0:
+        return [_create_trail_curve(name,position,n_frames,frame_offset,color,radius,trail_length,opacity)]
+    boundaries=np.concatenate([[0],reanchor_frames,[n_frames]]).astype(int)
+    objs=[]
+    last_i=len(boundaries)-2
+    for i,(s,e) in enumerate(zip(boundaries[:-1],boundaries[1:])):
+        if e-s<2:
+            continue
+        hide_frame=None if i==last_i else frame_offset+e+1
+        objs.append(_create_trail_curve(
+            f"{name}_{i}",position[s:e],e-s,frame_offset+s,color,radius,trail_length,opacity,
+            hide_frame=hide_frame
+        ))
+    return objs
+
+
 def apply_shader(objects,shader,name):
     mat=bpy.data.materials.new(name=name)
     mat.use_nodes=True
@@ -243,11 +391,128 @@ print(f"inferred-drone frame offset: {_frame_offset_infer} frames "
 
 root,objects,n_frames=create_drone("",DATA,FPS,STRIDE)
 apply_shader(objects,DRONE_SHADERS[""],"DroneShader")
+create_trail("gt",_data_meta["position"],n_frames,0,DRONE_SHADERS[""].base_color)
 
 root_infer,objects_infer,n_frames_infer=create_drone("_Infer",DATA_INFER,FPS,STRIDE,frame_offset=_frame_offset_infer)
 apply_shader(objects_infer,DRONE_SHADERS["_Infer"],"DroneShader_Infer")
+_reanchor_frames=_data_infer_meta["reanchor_frames"] if "reanchor_frames" in _data_infer_meta else None
+create_trail("infer",_data_infer_meta["position"],n_frames_infer,_frame_offset_infer,
+             DRONE_SHADERS["_Infer"].base_color,reanchor_frames=_reanchor_frames)
 
 bpy.context.scene.frame_end=max(n_frames,n_frames_infer+_frame_offset_infer)
+
+GRID_SPACING=0.5           # metres between grid lines (fixed as grid expands)
+GRID_MAX_SIZE=5.0          # full extent (metres) when fully expanded
+GRID_LINE_THICKNESS=0.005  # wireframe tube radius in metres
+GRID_COLOR=(0.8, 0.8, 0.8)
+GRID_ALPHA=0.04
+
+GRID_ANIM_START_FRAME=100
+GRID_ANIM_END_FRAME=160
+
+# Each plane: (name, rotation_euler_degrees)
+GRID_PLANES={
+    "grid_xy":(0,   0,  0),
+    #"grid_xz":(90,  0,  0),
+    #grid_yz":(90,  0, 90),
+}
+
+
+def build_grid_nodegroup(spacing, mat):
+    ng=bpy.data.node_groups.new("GridNodeGroup","GeometryNodeTree")
+
+    ng.interface.new_socket("Geometry",in_out="OUTPUT",socket_type="NodeSocketGeometry")
+    size_sock=ng.interface.new_socket("Size",in_out="INPUT",socket_type="NodeSocketFloat")
+    size_sock.default_value=0.0
+    size_sock.min_value=0.0
+
+    nodes=ng.nodes
+    links=ng.links
+
+    gi=nodes.new("NodeGroupInput")
+    go=nodes.new("NodeGroupOutput")
+
+    grid=nodes.new("GeometryNodeMeshGrid")
+
+    # vertex count = ceil(Size / spacing) + 1
+    divide=nodes.new("ShaderNodeMath"); divide.operation="DIVIDE"
+    divide.inputs[1].default_value=spacing
+    ceil=nodes.new("ShaderNodeMath"); ceil.operation="CEIL"
+    add1=nodes.new("ShaderNodeMath"); add1.operation="ADD"
+    add1.inputs[1].default_value=1.0
+    fti=nodes.new("FunctionNodeFloatToInt"); fti.rounding_mode="ROUND"
+
+    m2c=nodes.new("GeometryNodeMeshToCurve")
+
+    circle=nodes.new("GeometryNodeCurvePrimitiveCircle")
+    circle.inputs["Resolution"].default_value=4
+    circle.inputs["Radius"].default_value=GRID_LINE_THICKNESS
+
+    c2m=nodes.new("GeometryNodeCurveToMesh")
+    c2m.inputs["Fill Caps"].default_value=False
+
+    set_mat=nodes.new("GeometryNodeSetMaterial")
+    set_mat.inputs["Material"].default_value=mat
+
+    links.new(gi.outputs["Size"],grid.inputs["Size X"])
+    links.new(gi.outputs["Size"],grid.inputs["Size Y"])
+
+    links.new(gi.outputs["Size"],divide.inputs[0])
+    links.new(divide.outputs["Value"],ceil.inputs[0])
+    links.new(ceil.outputs["Value"],add1.inputs[0])
+    links.new(add1.outputs["Value"],fti.inputs[0])
+    links.new(fti.outputs["Integer"],grid.inputs["Vertices X"])
+    links.new(fti.outputs["Integer"],grid.inputs["Vertices Y"])
+
+    links.new(grid.outputs["Mesh"],m2c.inputs["Mesh"])
+    links.new(m2c.outputs["Curve"],c2m.inputs["Curve"])
+    links.new(circle.outputs["Curve"],c2m.inputs["Profile Curve"])
+    links.new(c2m.outputs["Mesh"],set_mat.inputs["Geometry"])
+    links.new(set_mat.outputs["Geometry"],go.inputs["Geometry"])
+
+    return ng
+
+
+def create_grids(
+    spacing=GRID_SPACING,
+    max_size=GRID_MAX_SIZE,
+    color=GRID_COLOR,
+    alpha=GRID_ALPHA,
+    start_frame=GRID_ANIM_START_FRAME,
+    end_frame=GRID_ANIM_END_FRAME,
+):
+    mat=bpy.data.materials.new("GridMat")
+    mat.use_nodes=True
+    bsdf=mat.node_tree.nodes.get("Principled BSDF")
+    bsdf.inputs["Base Color"].default_value=(*color,1.0)
+    bsdf.inputs["Roughness"].default_value=1.0
+    bsdf.inputs["Alpha"].default_value=alpha
+    mat.blend_method="BLEND"
+
+    ng=build_grid_nodegroup(spacing,mat)
+
+    planes={}
+    for name,(rx,ry,rz) in GRID_PLANES.items():
+        mesh=bpy.data.meshes.new(name)
+        obj=bpy.data.objects.new(name,mesh)
+        bpy.context.collection.objects.link(obj)
+        obj.rotation_euler=[radians(rx),radians(ry),radians(rz)]
+
+        mod=obj.modifiers.new("Grid","NODES")
+        mod.node_group=ng
+
+        # animate Size: 0 at start_frame -> max_size at end_frame
+        mod["Socket_1"]=0.0
+        obj.keyframe_insert(data_path='modifiers["Grid"]["Socket_1"]',frame=start_frame)
+        mod["Socket_1"]=max_size
+        obj.keyframe_insert(data_path='modifiers["Grid"]["Socket_1"]',frame=end_frame)
+
+        planes[name]=obj
+
+    return planes
+
+
+grid_planes=create_grids()
 
 SPOTLIGHT_POSITIONS={
     "spot_1":(5,5,5),
@@ -289,7 +554,7 @@ CAMERA_FOV=77.3  # degrees, horizontal field of view
 # Frame range is in scene frames (1-based, matching the drone keyframes).
 CAMERA_ANIM_ENABLED=True
 CAMERA_ANIM_START_FRAME=100
-CAMERA_ANIM_END_FRAME=130          # set to None to use bpy.context.scene.frame_end
+CAMERA_ANIM_END_FRAME=160          # set to None to use bpy.context.scene.frame_end
 
 CAMERA_START_POSITION=(-3,-2.6,2.2)
 CAMERA_END_POSITION=(-1.5,-2.4,3.8)
@@ -333,6 +598,9 @@ def animate_camera(camera,start_frame,end_frame,
 
 
 camera=create_camera("Camera",CAMERA_POSITION,CAMERA_ROTATION,CAMERA_FOV)
+
+create_label(DRONE_LABELS[""],root,camera,DRONE_SHADERS[""].base_color)
+create_label(DRONE_LABELS["_Infer"],root_infer,camera,DRONE_SHADERS["_Infer"].base_color)
 
 if CAMERA_ANIM_ENABLED:
     anim_end=CAMERA_ANIM_END_FRAME if CAMERA_ANIM_END_FRAME is not None else bpy.context.scene.frame_end

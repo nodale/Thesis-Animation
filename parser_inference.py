@@ -176,10 +176,12 @@ for log_dir in sorted(glob.glob(os.path.join(DATA_DIR, "*"))):
     # (generation boundaries are event-driven, not aligned to any global clock, so a
     # simple continuous floor(elapsed_s/32) reanchor lands at the wrong points entirely).
     position = np.zeros_like(deltas)
+    reanchor_times = []
     for cid in np.unique(generation_id):
         idx = np.flatnonzero(generation_id == cid)
         for i0_rel, i1_rel in find_laps(t_s[idx], lap_duration=REANCHOR_INTERVAL):
             i0, i1 = idx[i0_rel], idx[i1_rel - 1] + 1
+            reanchor_times.append(t_s[i0])
             position[i0] = position_gt[i0]
             if i1 - i0 > 1:
                 position[i0 + 1:i1] = position_gt[i0] + np.cumsum(deltas[i0:i1 - 1], axis=0)
@@ -213,6 +215,11 @@ for log_dir in sorted(glob.glob(os.path.join(DATA_DIR, "*"))):
     # it back to ULog-internal us, directly comparable to parser_real.py's own t_start_us)
     t_start_us = (t_start - offset) * 1e6
 
+    # reanchor_frames: grid-frame indices where the trail should reset (i.e. lap starts)
+    ra_times = np.array(reanchor_times)
+    ra_times = ra_times[(ra_times >= t_grid[0]) & (ra_times <= t_grid[-1])]
+    reanchor_frames_out = np.searchsorted(t_grid, ra_times).astype(np.int32)
+
     out = os.path.join(log_dir, "flight_infer.npz")
     np.savez(
         out,
@@ -221,5 +228,6 @@ for log_dir in sorted(glob.glob(os.path.join(DATA_DIR, "*"))):
         quaternion=quat_out,
         motor=motor_out,
         t_start_us=np.float64(t_start_us),
+        reanchor_frames=reanchor_frames_out,
     )
     print(f"saved {out}  |  {n} samples @ {HZ} Hz  ({ts_out[-1]:.1f} s)")
