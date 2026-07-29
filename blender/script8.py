@@ -362,6 +362,34 @@ def create_trail(name,position,n_frames,frame_offset,color,
     return objs
 
 
+def hide_until(root,objects,start_frame):
+    """Hide root + all mesh objects before start_frame, then show instantly."""
+    if start_frame<=1:
+        return
+    all_objs=[root]+list(objects.values())
+    for obj in all_objs:
+        obj.hide_render=True;  obj.hide_viewport=True
+        obj.keyframe_insert(data_path="hide_render",  frame=1)
+        obj.keyframe_insert(data_path="hide_viewport", frame=1)
+        obj.hide_render=False; obj.hide_viewport=False
+        obj.keyframe_insert(data_path="hide_render",  frame=start_frame)
+        obj.keyframe_insert(data_path="hide_viewport", frame=start_frame)
+        # fix interpolation to CONSTANT so visibility snaps rather than fades
+        if not obj.animation_data or not obj.animation_data.action:
+            continue
+        slot=obj.animation_data.action_slot
+        for layer in obj.animation_data.action.layers:
+            for strip in layer.strips:
+                cb=strip.channelbag(slot)
+                if cb is None:
+                    continue
+                for fc in cb.fcurves:
+                    if fc.data_path in ("hide_render","hide_viewport"):
+                        for kp in fc.keyframe_points:
+                            kp.interpolation='CONSTANT'
+                        fc.update()
+
+
 def apply_shader(objects,shader,name):
     mat=bpy.data.materials.new(name=name)
     mat.use_nodes=True
@@ -395,6 +423,7 @@ create_trail("gt",_data_meta["position"],n_frames,0,DRONE_SHADERS[""].base_color
 
 root_infer,objects_infer,n_frames_infer=create_drone("_Infer",DATA_INFER,FPS,STRIDE,frame_offset=_frame_offset_infer)
 apply_shader(objects_infer,DRONE_SHADERS["_Infer"],"DroneShader_Infer")
+hide_until(root_infer,objects_infer,_frame_offset_infer+1)
 _reanchor_frames=_data_infer_meta["reanchor_frames"] if "reanchor_frames" in _data_infer_meta else None
 create_trail("infer",_data_infer_meta["position"],n_frames_infer,_frame_offset_infer,
              DRONE_SHADERS["_Infer"].base_color,reanchor_frames=_reanchor_frames)
@@ -402,7 +431,7 @@ create_trail("infer",_data_infer_meta["position"],n_frames_infer,_frame_offset_i
 bpy.context.scene.frame_end=max(n_frames,n_frames_infer+_frame_offset_infer)
 
 GRID_SPACING=0.5           # metres between grid lines (fixed as grid expands)
-GRID_MAX_SIZE=5.0          # full extent (metres) when fully expanded
+GRID_MAX_SIZE=20.0          # full extent (metres) when fully expanded
 GRID_LINE_THICKNESS=0.005  # wireframe tube radius in metres
 GRID_COLOR=(0.8, 0.8, 0.8)
 GRID_ALPHA=0.04
